@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Jumping Ball Runner</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: 'Comic Sans MS', cursive, sans-serif;
+      background: linear-gradient(#6dd5fa, #ffffff);
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #ui {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      color: #fff;
+      font-weight: bold;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+      font-size: 18px;
+      background: rgba(0,0,0,0.25);
+      padding: 10px 14px;
+      border-radius: 12px;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    }
+
+    #retryButton {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 24px;
+      padding: 12px 24px;
+      background-color: #ff4081;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    #retryButton:hover {
+      background-color: #e91e63;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="ui">
+    Score: <span id="score">0</span><br>
+    High Score: <span id="highScore">0</span>
+  </div>
+  <button id="retryButton">Retry</button>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const retryButton = document.getElementById("retryButton");
+    const scoreDisplay = document.getElementById("score");
+    const highScoreDisplay = document.getElementById("highScore");
+
+    let gameRunning = true;
+    let score = 0;
+    let highScore = localStorage.getItem("highScore") || 0;
+    highScoreDisplay.textContent = highScore;
+
+    const groundHeight = 80;
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      // Keep the ball on the floor if needed after resize
+      if (typeof ball !== 'undefined') {
+        const floorY = canvas.height - groundHeight - ball.radius;
+        if (ball.y > floorY) {
+          ball.y = floorY;
+          ball.vy = 0;
+          ball.isJumping = false;
+        }
+      }
+    }
+
+    const ball = {
+      x: 150,
+      y: 0,
+      radius: 25,
+      vy: 0,
+      gravity: 0.8,
+      jumpPower: -15,
+      isJumping: false,
+      maxJumps: 3,
+      jumpsUsed: 0,
+    };
+
+    // Initialize canvas to full screen and position the ball on the floor
+    resizeCanvas();
+    ball.y = canvas.height - groundHeight - ball.radius;
+    window.addEventListener('resize', resizeCanvas);
+
+    let speed = 6;
+    let frame = 0;
+    let obstacles = [];
+    let nextSpawnIn = 0;
+    let particles = [];
+
+    // Sound (only play jumpSound on lose)
+    const jumpSound = new Audio("https://freesound.org/data/previews/331/331912_3248244-lq.mp3");
+
+    function drawBackground() {
+      // Sky gradient
+      const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      skyGradient.addColorStop(0, '#7bd5ff');
+      skyGradient.addColorStop(0.6, '#a9e6ff');
+      skyGradient.addColorStop(1, '#ffffff');
+      ctx.fillStyle = skyGradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Sun
+      const sunX = Math.min(140, canvas.width * 0.15);
+      const sunY = Math.max(80, canvas.height * 0.12);
+      const sunR = 60;
+      const sunGrad = ctx.createRadialGradient(sunX, sunY, 10, sunX, sunY, sunR);
+      sunGrad.addColorStop(0, 'rgba(255,255,200,1)');
+      sunGrad.addColorStop(1, 'rgba(255,200,0,0.1)');
+      ctx.fillStyle = sunGrad;
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Distant hills (parallax)
+      const baseY3 = canvas.height - groundHeight - 200;
+      const baseY2 = canvas.height - groundHeight - 160;
+      const baseY1 = canvas.height - groundHeight - 120;
+
+      function drawHillRow(baseY, radius, color, speedMul) {
+        ctx.fillStyle = color;
+        for (let x = -radius; x < canvas.width + radius; x += radius * 1.2) {
+          const offset = (frame * speedMul) % (radius * 1.2);
+          ctx.beginPath();
+          ctx.arc(x - offset, baseY, radius, 0, Math.PI, true);
+          ctx.fill();
+        }
+      }
+
+      drawHillRow(baseY3, 220, '#a0b6d9', 0.1);
+      drawHillRow(baseY2, 180, '#8db0c8', 0.2);
+      drawHillRow(baseY1, 140, '#7fb08a', 0.35);
+
+      // Clouds with slight depth
+      for (let i = 0; i < 3; i++) {
+        const offset = frame * (0.4 + i * 0.25);
+        const w = canvas.width || 1;
+        const cx = 150 + (i * 320) - (offset % w);
+        const cy = 80 + i * 22;
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 28, 0, Math.PI * 2);
+        ctx.arc(cx + 30, cy + 5, 38, 0, Math.PI * 2);
+        ctx.arc(cx + 65, cy, 28, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Decorative trees and bushes (parallax, seamless loop)
+      const decoBaseY = canvas.height - groundHeight;
+      const spacing = 300;
+      const shift = frame * 0.6;
+      const start = -((shift % spacing)) - spacing;
+      for (let px = start; px < canvas.width + spacing; px += spacing) {
+        // Tree
+        ctx.fillStyle = '#8d5a3b';
+        ctx.fillRect(px, decoBaseY - 90, 16, 90);
+        const canopyGrad = ctx.createRadialGradient(px + 8, decoBaseY - 110, 10, px + 8, decoBaseY - 110, 60);
+        canopyGrad.addColorStop(0, '#6ad66a');
+        canopyGrad.addColorStop(1, '#2e8b57');
+        ctx.fillStyle = canopyGrad;
+        ctx.beginPath();
+        ctx.arc(px - 10, decoBaseY - 120, 26, 0, Math.PI * 2);
+        ctx.arc(px + 8, decoBaseY - 140, 34, 0, Math.PI * 2);
+        ctx.arc(px + 26, decoBaseY - 120, 26, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Bush positioned half-spacing after the tree
+        const bx = px + spacing / 2;
+        const bushGrad = ctx.createRadialGradient(bx, decoBaseY - 10, 5, bx, decoBaseY - 10, 38);
+        bushGrad.addColorStop(0, '#8ff0a4');
+        bushGrad.addColorStop(1, '#3aa96b');
+        ctx.fillStyle = bushGrad;
+        ctx.beginPath();
+        ctx.arc(bx - 20, decoBaseY - 10, 22, 0, Math.PI * 2);
+        ctx.arc(bx, decoBaseY - 16, 28, 0, Math.PI * 2);
+        ctx.arc(bx + 22, decoBaseY - 10, 22, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Birds
+      function drawBird(x, y, scale) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x - 8 * scale, y);
+        ctx.quadraticCurveTo(x - 2 * scale, y - 6 * scale, x, y);
+        ctx.quadraticCurveTo(x + 2 * scale, y - 6 * scale, x + 8 * scale, y);
+        ctx.stroke();
+      }
+      const birdOffset = frame * 0.9;
+      drawBird((canvas.width - (birdOffset % (canvas.width + 50))) - 20, 90, 1);
+      drawBird((canvas.width - ((birdOffset + 160) % (canvas.width + 50))) - 20, 140, 0.8);
+
+      // Ground with gradient
+      const groundGrad = ctx.createLinearGradient(0, canvas.height - groundHeight - 30, 0, canvas.height);
+      groundGrad.addColorStop(0, '#7fce5b');
+      groundGrad.addColorStop(1, '#4aa83c');
+      ctx.fillStyle = groundGrad;
+      ctx.fillRect(0, canvas.height - groundHeight, canvas.width, groundHeight);
+
+      // Simple grass blades
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < canvas.width; x += 18) {
+        const sway = Math.sin((frame + x) * 0.03) * 3;
+        ctx.beginPath();
+        ctx.moveTo(x, canvas.height - groundHeight + 10);
+        ctx.quadraticCurveTo(x + sway, canvas.height - groundHeight - 10, x + 2, canvas.height - groundHeight + 6);
+        ctx.stroke();
+      }
+    }
+
+    function shadeColor(hex, percent) {
+      const f = parseInt(hex.slice(1), 16);
+      const t = percent < 0 ? 0 : 255;
+      const p = Math.abs(percent) / 100;
+      const R = f >> 16, G = (f >> 8) & 0x00FF, B = f & 0x0000FF;
+      const newR = Math.round((t - R) * p) + R;
+      const newG = Math.round((t - G) * p) + G;
+      const newB = Math.round((t - B) * p) + B;
+      return '#' + (0x1000000 + (newR << 16) + (newG << 8) + newB).toString(16).slice(1);
+    }
+
+    function drawBall() {
+      // Subtle shadow under ball (toned down)
+      const groundY = canvas.height - groundHeight;
+      const heightAboveGround = Math.max(0, groundY - ball.y - ball.radius);
+      const shadowScale = Math.max(0.25, 1 - heightAboveGround / 140);
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.15)';
+      ctx.beginPath();
+      ctx.ellipse(ball.x, groundY - 6, ball.radius * 1.1 * shadowScale, ball.radius * 0.45 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Body with radial gradient
+      const grad = ctx.createRadialGradient(ball.x - ball.radius * 0.4, ball.y - ball.radius * 0.5, 6, ball.x, ball.y, ball.radius);
+      grad.addColorStop(0, '#ffeb66');
+      grad.addColorStop(1, '#f4b400');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Eyes (cartoon)
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(ball.x - 8, ball.y - 10, 5, 0, Math.PI * 2);
+      ctx.arc(ball.x + 8, ball.y - 10, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      const pupilOffset = Math.max(-3, Math.min(3, ball.vy * 0.2));
+      ctx.beginPath();
+      ctx.arc(ball.x - 8 + 1, ball.y - 10 + pupilOffset, 2, 0, Math.PI * 2);
+      ctx.arc(ball.x + 8 + 1, ball.y - 10 + pupilOffset, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Mouth: smile during play, frown only after losing
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (gameRunning) {
+        ctx.moveTo(ball.x - 8, ball.y + 6);
+        ctx.quadraticCurveTo(ball.x, ball.y + 12, ball.x + 8, ball.y + 6);
+      } else {
+        ctx.moveTo(ball.x - 8, ball.y + 10);
+        ctx.quadraticCurveTo(ball.x, ball.y + 2, ball.x + 8, ball.y + 10);
+      }
+      ctx.stroke();
+    }
+
+    function drawRoundedRectPath(x, y, w, h, r) {
+      const radius = Math.min(r, w * 0.5, h * 0.5);
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    }
+
+    function drawObstacles() {
+      for (const obs of obstacles) {
+        const base = obs.color || '#8db0c8';
+        const lighter = shadeColor(base, 25);
+        const darker = shadeColor(base, -10);
+        const grad = ctx.createLinearGradient(obs.x, obs.y, obs.x, obs.y + obs.height);
+        grad.addColorStop(0, lighter);
+        grad.addColorStop(1, darker);
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = grad;
+        drawRoundedRectPath(obs.x, obs.y, obs.width, obs.height, 10);
+        ctx.fill();
+        ctx.restore();
+        // Soft outline to remain visible but blended
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.lineWidth = 1.5;
+        drawRoundedRectPath(obs.x, obs.y, obs.width, obs.height, 10);
+        ctx.stroke();
+      }
+    }
+
+    // Simple particle system for dust
+    function spawnDust(x, groundY, amount = 10) {
+      for (let i = 0; i < amount; i++) {
+        particles.push({
+          x: x + (Math.random() * 10 - 5),
+          y: groundY - 6,
+          vx: (Math.random() - 0.5) * 2.4,
+          vy: -Math.random() * 2.2,
+          life: 28 + Math.random() * 14,
+          size: 2 + Math.random() * 2,
+          color: 'rgba(255,255,255,0.9)'
+        });
+      }
+    }
+
+    function updateParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.12;
+        p.life -= 1;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function updateBall() {
+      ball.vy += ball.gravity;
+      ball.y += ball.vy;
+
+      const floor = canvas.height - groundHeight - ball.radius;
+
+      if (ball.y >= floor) {
+        ball.y = floor;
+        ball.vy = 0;
+        ball.isJumping = false;
+        ball.jumpsUsed = 0;
+        // no ground special effects
+      }
+    }
+
+    function randomBetween(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function computeSpawnInterval() {
+      const base = Math.round(randomBetween(45, 80));
+      const scaled = Math.round(base * (speed / 6));
+      return clamp(scaled, 40, 130);
+    }
+
+    function spawnObstacle() {
+      const typeRoll = Math.random();
+      const startX = canvas.width + 20;
+
+      if (typeRoll < 0.45) {
+        const width = Math.round(randomBetween(25, 50));
+        const height = Math.round(randomBetween(40, 140));
+        obstacles.push({
+          x: startX,
+          y: canvas.height - groundHeight - height,
+          width,
+          height,
+          color: "#ff5e57"
+        });
+      } else if (typeRoll < 0.8) {
+        const width = Math.round(randomBetween(60, 120));
+        const height = Math.round(randomBetween(25, 60));
+        obstacles.push({
+          x: startX,
+          y: canvas.height - groundHeight - height,
+          width,
+          height,
+          color: "#f39c12"
+        });
+      } else {
+        const width1 = Math.round(randomBetween(25, 45));
+        const height1 = Math.round(randomBetween(50, 140));
+        // Gap tuned so that at higher obstacle heights/speeds a double jump is often needed
+        const gap = Math.round(randomBetween(110, 180));
+        const width2 = Math.round(randomBetween(25, 45));
+        const height2 = Math.round(randomBetween(50, 140));
+
+        obstacles.push({
+          x: startX,
+          y: canvas.height - groundHeight - height1,
+          width: width1,
+          height: height1,
+          color: "#27ae60"
+        });
+
+        obstacles.push({
+          x: startX + width1 + gap,
+          y: canvas.height - groundHeight - height2,
+          width: width2,
+          height: height2,
+          color: "#2980b9"
+        });
+      }
+    }
+
+    function updateObstacles() {
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        obstacles[i].x -= speed;
+
+        if (obstacles[i].x + obstacles[i].width < 0) {
+          obstacles.splice(i, 1);
+          score++;
+          scoreDisplay.textContent = score;
+        }
+      }
+      
+      // Adaptive spawn timer
+      nextSpawnIn -= 1;
+      if (nextSpawnIn <= 0) {
+        spawnObstacle();
+        nextSpawnIn = computeSpawnInterval();
+      }
+    }
+
+    function checkCollision() {
+      for (let obs of obstacles) {
+        if (
+          ball.x + ball.radius > obs.x &&
+          ball.x - ball.radius < obs.x + obs.width &&
+          ball.y + ball.radius > obs.y
+        ) {
+          jumpSound.play();
+          endGame();
+        }
+      }
+    }
+
+    function endGame() {
+      gameRunning = false;
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem("highScore", highScore);
+        highScoreDisplay.textContent = highScore;
+      }
+      retryButton.style.display = "block";
+    }
+
+    function resetGame() {
+      score = 0;
+      speed = 6;
+      frame = 0;
+      ball.y = canvas.height - groundHeight - ball.radius;
+      ball.vy = 0;
+      ball.isJumping = false;
+      obstacles = [];
+      nextSpawnIn = computeSpawnInterval();
+      scoreDisplay.textContent = score;
+      retryButton.style.display = "none";
+      gameRunning = true;
+      requestAnimationFrame(gameLoop);
+    }
+
+    function gameLoop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBackground();
+      drawBall();
+      drawObstacles();
+      drawParticles();
+      updateBall();
+      updateObstacles();
+      updateParticles();
+      checkCollision();
+
+      if (gameRunning) {
+        frame++;
+        // Slightly faster ramp to occasionally require double jump, with a modest cap
+        speed = Math.min(speed + 0.0012, 12);
+        requestAnimationFrame(gameLoop);
+      }
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if ((e.code === "Space" || e.code === "ArrowUp") && gameRunning) {
+        if (!ball.isJumping) {
+          // First jump from the ground
+          ball.vy = ball.jumpPower;
+          ball.isJumping = true;
+          ball.jumpsUsed = 1;
+          // no jump sound
+        } else if (ball.jumpsUsed < ball.maxJumps) {
+          // Air jump
+          ball.vy = ball.jumpPower;
+          ball.jumpsUsed += 1;
+          // no jump sound
+        }
+      }
+    });
+
+    retryButton.addEventListener("click", resetGame);
+
+    nextSpawnIn = computeSpawnInterval();
+    gameLoop();
+  </script>
+</body>
+</html>
